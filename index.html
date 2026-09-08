@@ -418,7 +418,7 @@
           },
           locate: true,
           src: imageSrc
-        }, function (result) {
+        }, async function (result) {
           scannerLine.classList.add('hidden');
 
           if (result && result.codeResult && result.codeResult.code) {
@@ -426,7 +426,22 @@
             console.log("Decoded Barcode:", barcode);
             fetchProductData(barcode);
           } else {
-            console.warn("Barcode could not be decoded automatically.");
+            showStatus("Trying enhanced barcode detection...");
+            try {
+              const response = await fetch('/api/decode-barcode', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ image: imageSrc })
+              });
+              const decoded = await response.json();
+              if (decoded.barcode) {
+                console.log("Server-decoded barcode:", decoded.barcode);
+                fetchProductData(decoded.barcode);
+                return;
+              }
+            } catch (error) {
+              console.warn("Enhanced barcode detection failed.", error);
+            }
             hideStatus();
             showError("Barcode Not Detected", "We couldn't clearly detect a barcode pattern in this image. Please try entering the barcode numbers manually or choose a clearer photo.");
           }
