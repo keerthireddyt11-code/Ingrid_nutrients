@@ -114,6 +114,95 @@ def test_check_output_can_flag_multiple_phrases():
 
 
 # ---------------------------------------------------------------------------
+# apply_rubric
+# ---------------------------------------------------------------------------
+
+def test_apply_rubric_returns_ok_for_good_nutrition():
+    assert chain.apply_rubric("a", 1, []) == ("ok", ["Nutri-Score A"])
+
+
+def test_apply_rubric_returns_care_for_permitted_additive_with_special_consideration():
+    verdict, reasons = chain.apply_rubric(None, None, ["E471"])
+    assert verdict == "unknown"
+    assert reasons == ["insufficient data to apply the rubric (no Nutri-Score or NOVA group on file)"]
+
+
+def test_apply_rubric_marks_care_additive():
+    verdict, reasons = chain.apply_rubric(None, None, ["E102"])
+    assert verdict == "care"
+    assert reasons == ["contains additive(s) that warrant moderation: e102"]
+
+
+def test_apply_rubric_marks_sfa_unlisted_additive_avoid():
+    verdict, reasons = chain.apply_rubric(None, None, ["E9999"])
+    assert verdict == "avoid"
+    assert "not found in the SFA permitted-additives guidance" in reasons[0]
+
+
+def test_apply_rubric_permitted_additives_do_not_automatically_mean_ok():
+    verdict, reasons = chain.apply_rubric("c", 2, ["E471", "E150a"])
+    assert verdict == "care"
+    assert reasons == ["Nutri-Score C"]
+
+
+def test_apply_rubric_avoid_tier_takes_precedence_over_care():
+    verdict, reasons = chain.apply_rubric("e", 4, ["E102"])
+    assert verdict == "avoid"
+    assert reasons == ["Nutri-Score E", "NOVA group 4"]
+
+
+def test_apply_rubric_accepts_numeric_and_mixed_case_inputs():
+    verdict, reasons = chain.apply_rubric(" B ", "3", ["102"])
+    assert verdict == "care"
+    assert reasons == ["contains additive(s) that warrant moderation: e102", "NOVA group 3 (ultra-processed)"]
+
+
+def test_apply_rubric_unknown_when_all_scoring_fields_are_missing():
+    assert chain.apply_rubric(None, None, ["E471"]) == (
+        "unknown",
+        ["insufficient data to apply the rubric (no Nutri-Score or NOVA group on file)"],
+    )
+
+
+def test_get_flagged_additives_returns_codes_and_reasons():
+    assert chain.get_flagged_additives(["E102", "E471", "E9999"]) == [
+        {"code": "E102", "reason": "warrants moderation"},
+        {"code": "E9999", "reason": "not found in SFA permitted-additives guidance (31 May 2024)"},
+    ]
+
+
+def test_get_flagged_additives_excludes_permitted_unflagged_codes():
+    assert chain.get_flagged_additives(["E150a", "E338", "E471"]) == []
+
+
+def test_build_verdict_summary_matches_coke_style_evidence():
+    summary = chain.build_verdict_summary(
+        {"product_name": "Coke 20oz", "nutriscore_grade": "e", "nova_group": 4},
+        {
+            "sugars": {"value": 11.470588684, "unit": "g"},
+            "added_sugars": {"value": 65, "unit": "g"},
+            "proteins": {"value": 0, "unit": "g"},
+            "fiber": {"value": 0, "unit": "g"},
+        },
+        "avoid",
+        ["Nutri-Score E", "NOVA group 4"],
+    )
+    assert summary.startswith("# Coke 20oz – Avoid")
+    assert "Nutri-Score E rating" in summary
+    assert "Per 100g, it contains 11.5g of sugars" in summary
+    assert "11.5g of sugars per 100g" not in summary
+    assert "65g of added sugars" in summary
+    assert "no protein and no fiber" in summary
+    assert "NOVA Group 4" in summary
+
+
+def test_build_verdict_summary_handles_missing_data():
+    summary = chain.build_verdict_summary({}, {}, "unknown", ["missing data"])
+    assert summary.startswith("# This product – Unknown")
+    assert "not enough recorded Nutri-Score or NOVA data" in summary
+
+
+# ---------------------------------------------------------------------------
 # _product_context_block / _recent_scans_block
 # ---------------------------------------------------------------------------
 

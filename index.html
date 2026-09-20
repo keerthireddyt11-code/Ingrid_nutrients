@@ -250,6 +250,7 @@
             </div>
             <h4 id="verdict-headline" class="text-xl font-black mt-1">Healthy, Balanced Profile</h4>
             <p id="verdict-description" class="text-sm opacity-90 mt-1 leading-relaxed">Based on nutritional quality, additive safety, and processing levels.</p>
+            <p id="verdict-summary" class="text-sm opacity-90 mt-3 leading-relaxed whitespace-pre-line"></p>
           </div>
         </div>
       </div>
@@ -307,6 +308,10 @@
               <span class="text-xs font-bold text-slate-500 block uppercase tracking-wider">Additives & Highlights</span>
               <div id="additives-tags" class="flex flex-wrap gap-2">
                 <span class="text-xs text-slate-400 italic">No specific additives detected</span>
+              </div>
+              <div id="flagged-additives-card" class="mt-4 rounded-xl border border-amber-200 bg-amber-50/70 px-3 py-2.5">
+                <span class="text-xs font-bold text-amber-900 block">Flagged additives - <span id="flagged-additive-count">0</span></span>
+                <div id="flagged-additives-list" class="flex flex-wrap gap-2 mt-2"></div>
               </div>
             </div>
           </div>
@@ -462,26 +467,17 @@
         }, async function (result) {
           scannerLine.classList.add('hidden');
 
-          if (result && result.codeResult && result.codeResult.code) {
+          if (result && result.codeResult && isLikelyBarcode(result.codeResult.code)) {
             const barcode = result.codeResult.code;
             console.log("Decoded Barcode:", barcode);
-            fetchProductData(barcode);
+            fetchProductData(barcode, imageSrc);
           } else {
             showStatus("Trying enhanced barcode detection...");
-            try {
-              const response = await fetch('/api/decode-barcode', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ image: imageSrc })
-              });
-              const decoded = await response.json();
-              if (decoded.barcode) {
-                console.log("Server-decoded barcode:", decoded.barcode);
-                fetchProductData(decoded.barcode);
-                return;
-              }
-            } catch (error) {
-              console.warn("Enhanced barcode detection failed.", error);
+            const barcode = await decodeEnhancedBarcode(imageSrc);
+            if (barcode) {
+              console.log("Server-decoded barcode:", barcode);
+              fetchProductData(barcode, imageSrc, true);
+              return;
             }
             hideStatus();
             showError("Barcode Not Detected", "We couldn't clearly detect a barcode pattern in this image. Please try entering the barcode numbers manually or choose a clearer photo.");
@@ -490,6 +486,30 @@
       };
 
       reader.readAsDataURL(file);
+    }
+
+    function isLikelyBarcode(value) {
+      const digits = String(value || '').replace(/\D/g, '');
+      if (![12, 13, 14].includes(digits.length)) return false;
+      const check = digits.slice(0, -1).split('').reverse().reduce((sum, digit, index) => {
+        return sum + Number(digit) * (index % 2 === 0 ? 3 : 1);
+      }, 0);
+      return (10 - check % 10) % 10 === Number(digits[digits.length - 1]);
+    }
+
+    async function decodeEnhancedBarcode(imageSrc) {
+      try {
+        const response = await fetch('/api/decode-barcode', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ image: imageSrc })
+        });
+        const decoded = await response.json();
+        return isLikelyBarcode(decoded.barcode) ? decoded.barcode : '';
+      } catch (error) {
+        console.warn("Enhanced barcode detection failed.", error);
+        return '';
+      }
     }
 
     // Manual or Demo Barcode Input Trigger
@@ -597,7 +617,7 @@
     }
 
     // Fetch product data from the local Pinecone-backed Python API.
-    async function fetchProductData(barcode) {
+    async function fetchProductData(barcode, imageSrc = '', fallbackAttempted = false) {
       try {
         const response = await fetch('/api/product', {
           method: 'POST',
@@ -610,6 +630,15 @@
 
         if (data.product) {
           renderProductResults(barcode, data);
+        } else if (imageSrc && !fallbackAttempted) {
+          showStatus("Barcode read, checking enhanced detection...");
+          const fallbackBarcode = await decodeEnhancedBarcode(imageSrc);
+          if (fallbackBarcode && fallbackBarcode !== barcode) {
+            fetchProductData(fallbackBarcode, imageSrc, true);
+            return;
+          }
+          hideStatus();
+          showError("Barcode Not Detected", "We couldn't confirm a product from the detected barcode. Please enter the full barcode numbers manually or choose a clearer photo.");
         } else {
           showError("Product Not Found", data.explanation || `Barcode ${barcode} was not found in Pinecone or OpenFoodFacts. Please scan or enter another barcode.`);
         }
@@ -648,6 +677,22 @@
       additivesContainer.innerHTML = '';
       const additives = additiveData.additives || [];
       const highlights = additiveData.highlights || [];
+      const flaggedAdditives = data.flagged_additives || [];
+      document.getElementById('flagged-additive-count').textContent = flaggedAdditives.length;
+      const flaggedCard = document.getElementById('flagged-additives-card');
+      const flaggedContainer = document.getElementById('flagged-additives-list');
+      flaggedContainer.innerHTML = '';
+      if (flaggedAdditives.length === 0) {
+        flaggedCard.classList.remove('hidden');
+      } else {
+        flaggedCard.classList.remove('hidden');
+        flaggedAdditives.forEach(item => {
+          const badge = document.createElement('span');
+          badge.className = 'px-2.5 py-1 bg-white text-amber-900 border border-amber-300 text-[11px] rounded-lg font-semibold';
+          badge.textContent = `${item.code}: ${item.reason}`;
+          flaggedContainer.appendChild(badge);
+        });
+      }
       if (additives.length > 0 || highlights.length > 0) {
         additives.forEach(add => {
           const cleanName = add.toUpperCase();
@@ -722,7 +767,7 @@
       }
 
       // Compute Overall Verdict
-      renderVerdict(nutriScore, novaGroup, additives.length);
+      renderVerdict(nutriScore, novaGroup, additives.length, data.rubric_verdict, data.rubric_reasons || [], data.verdict_summary || '');
 
       // Persist this scan to the local history panel
       saveToHistory({
@@ -747,12 +792,29 @@
     }
 
     // Verdict Logic Engine
-    function renderVerdict(score, nova, additiveCount) {
+    function renderVerdict(score, nova, additiveCount, rubricVerdict, rubricReasons, verdictSummary) {
       const banner = document.getElementById('verdict-banner');
       const iconContainer = document.getElementById('verdict-icon-container');
       const badge = document.getElementById('verdict-badge');
       const headline = document.getElementById('verdict-headline');
       const desc = document.getElementById('verdict-description');
+      const summary = document.getElementById('verdict-summary');
+      summary.textContent = verdictSummary.replace(/^# .*?\n\n/, '');
+
+      if (rubricVerdict === 'avoid' || rubricVerdict === 'care' || rubricVerdict === 'ok') {
+        const palette = rubricVerdict === 'avoid'
+          ? ['border-rose-200', 'bg-gradient-to-r', 'from-rose-500', 'via-red-600', 'to-rose-700', 'shadow-rose-500/20', 'text-rose-900', 'CONSUME SPARINGLY', 'High concern or regulatory uncertainty detected.']
+          : rubricVerdict === 'care'
+            ? ['border-amber-200', 'bg-gradient-to-r', 'from-amber-500', 'via-orange-500', 'to-amber-600', 'shadow-amber-500/20', 'text-amber-900', 'MODERATE CHOICE', 'Some ingredients or product signals warrant moderation.']
+            : ['border-emerald-200', 'bg-gradient-to-r', 'from-emerald-500', 'via-teal-600', 'to-emerald-700', 'shadow-emerald-500/20', 'text-emerald-900', 'RECOMMENDED', 'No care or avoid rule was triggered by the available data.'];
+        banner.className = `p-6 sm:p-7 rounded-3xl border ${palette[0]} ${palette[1]} ${palette[2]} ${palette[3]} ${palette[4]} text-white flex flex-col sm:flex-row items-start sm:items-center justify-between gap-5 shadow-lg ${palette[5]}`;
+        iconContainer.className = 'p-3.5 rounded-2xl bg-white/20 text-white flex-shrink-0 backdrop-blur-md';
+        badge.className = `px-3 py-0.5 text-xs font-black rounded-full bg-white ${palette[6]} tracking-wider`;
+        badge.textContent = palette[7];
+        headline.textContent = rubricVerdict === 'avoid' ? 'Review Before Choosing' : rubricVerdict === 'care' ? 'Moderation Suggested' : 'Positive Profile';
+        desc.textContent = rubricReasons.length ? rubricReasons.join('. ') + '.' : palette[8];
+        return;
+      }
 
       if (score === 'a' || score === 'b') {
         banner.className = "p-6 sm:p-7 rounded-3xl border border-emerald-200 bg-gradient-to-r from-emerald-500 via-teal-600 to-emerald-700 text-white flex flex-col sm:flex-row items-start sm:items-center justify-between gap-5 shadow-lg shadow-emerald-500/20";

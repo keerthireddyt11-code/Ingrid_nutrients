@@ -6,6 +6,17 @@ import cv2
 barcode_detector = cv2.barcode.BarcodeDetector()
 
 
+def _has_valid_barcode_checksum(value):
+    """Validate UPC/EAN check digits for automatically detected candidates."""
+    digits = str(value or "").strip()
+    if len(digits) not in {12, 13, 14} or not digits.isdigit():
+        return False
+    total = 0
+    for index, digit in enumerate(reversed(digits[:-1])):
+        total += int(digit) * (3 if index % 2 == 0 else 1)
+    return (10 - total % 10) % 10 == int(digits[-1])
+
+
 def _center_crops(image):
     """Return full-frame and centred crops for barcodes that occupy a small area."""
     height, width = image.shape[:2]
@@ -68,4 +79,6 @@ def extract_text(image_path: str) -> tuple[str, float]:
         raise ValueError(f"Could not read image: {image_path}")
 
     barcode = _decode_barcode(image)
+    if len(barcode) == 8 or not _has_valid_barcode_checksum(barcode):
+        barcode = ""
     return barcode, 1.0 if barcode else 0.0

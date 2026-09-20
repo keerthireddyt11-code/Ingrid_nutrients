@@ -46,3 +46,25 @@ def test_center_crops_are_centred():
     half_scale_crop = crops[3]
     expected = image[25:75, 25:75]
     assert np.array_equal(half_scale_crop, expected)
+
+
+def test_extract_text_rejects_eight_digit_auto_detection(tmp_path, monkeypatch):
+    import cv2
+
+    image_path = tmp_path / "candidate.jpg"
+    cv2.imwrite(str(image_path), np.full((40, 80, 3), 255, dtype=np.uint8))
+    monkeypatch.setattr(bd, "_decode_barcode", lambda image: "04100102")
+
+    barcode, confidence = bd.extract_text(str(image_path))
+    assert barcode == ""
+    assert confidence == 0.0
+
+
+def test_barcode_checksum_accepts_valid_upc():
+    assert bd._has_valid_barcode_checksum("036000291452") is True
+
+
+def test_barcode_checksum_rejects_false_full_length_candidate():
+    assert bd._has_valid_barcode_checksum("0555150280356") is False
+
+

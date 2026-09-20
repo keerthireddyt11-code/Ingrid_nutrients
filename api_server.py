@@ -46,7 +46,72 @@ def decode_barcode_with_vision(image):
         return ""
 
     match = re.fullmatch(r"\s*(\d{8,14})\s*", response.choices[0].message.content or "")
-    return match.group(1) if match else ""
+    candidate = match.group(1) if match else ""
+    return candidate if len(candidate) >= 12 else ""
+
+
+def decode_barcode_with_ocr(image_bytes):
+    """Read a full-length printed barcode number when image decoders miss the bars."""
+    try:
+        import cv2
+        import easyocr
+        import numpy as np
+
+        image = cv2.imdecode(np.frombuffer(image_bytes, dtype=np.uint8), cv2.IMREAD_COLOR)
+        if image is None:
+            return ""
+        reader = easyocr.Reader(["en"], gpu=False, verbose=False)
+        height, width = image.shape[:2]
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        variants = [
+            image,
+            cv2.resize(gray, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC),
+            cv2.resize(gray[int(height * 0.35):], None, fx=3, fy=3, interpolation=cv2.INTER_CUBIC),
+            cv2.resize(
+                cv2.threshold(gray[int(height * 0.35):], 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1],
+                None,
+                fx=3,
+                fy=3,
+                interpolation=cv2.INTER_NEAREST,
+            ),
+        ]
+    except Exception:
+        return ""
+
+    candidates = []
+    for variant in variants:
+        try:
+            results = reader.readtext(variant, detail=1, paragraph=False, allowlist="0123456789")
+        except Exception:
+            continue
+        digit_boxes = []
+        for box, text, confidence in results:
+            digits = re.sub(r"\D", "", text)
+            if digits and confidence >= 0.2:
+                center_x = sum(point[0] for point in box) / len(box)
+                center_y = sum(point[1] for point in box) / len(box)
+                digit_boxes.append((center_x, center_y, digits))
+                if 12 <= len(digits) <= 14:
+                    candidates.append(digits)
+        for _, _, line_digits in _group_ocr_digits(digit_boxes):
+            if 12 <= len(line_digits) <= 14:
+                candidates.append(line_digits)
+    return max(candidates, key=len, default="")
+
+
+def _group_ocr_digits(digit_boxes):
+    """Join OCR digit fragments that share a horizontal barcode-number row."""
+    groups = []
+    for center_x, center_y, digits in sorted(digit_boxes, key=lambda item: item[1]):
+        group = next((item for item in groups if abs(item[0] - center_y) < 80), None)
+        if group is None:
+            group = [center_y, []]
+            groups.append(group)
+        group[1].append((center_x, digits))
+    return [
+        (center_y, min(fragment[0] for fragment in fragments), "".join(digits for _, digits in sorted(fragments)))
+        for center_y, fragments in groups
+    ]
 
 
 class IngridHandler(SimpleHTTPRequestHandler):
@@ -107,7 +172,9 @@ class IngridHandler(SimpleHTTPRequestHandler):
                 return
             if not barcode:
                 barcode = decode_barcode_with_vision(image)
-                confidence = 1.0 if barcode else 0.0
+            if not barcode:
+                barcode = decode_barcode_with_ocr(image_bytes)
+            confidence = 1.0 if barcode else 0.0
             result = {"barcode": barcode, "confidence": confidence}
 
         body = json.dumps(result, ensure_ascii=False, default=str).encode("utf-8")

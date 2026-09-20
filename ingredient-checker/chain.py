@@ -23,6 +23,43 @@ OPENAI_CHAT_MODEL = os.getenv("OPENAI_CHAT_MODEL", "gpt-4o-mini")
 PRODUCT_INDEX_NAME = os.getenv("PINECONE_PRODUCT_INDEX", "ingrid-beverages")
 OPENFOODFACTS_API_URL = "https://world.openfoodfacts.org/api/v2/product/{code}.json"
 VALID_VERDICTS = {"ok", "care", "avoid", "unknown"}
+SFA_ADDITIVES_SOURCE = "https://www.sfa.gov.sg/docs/default-source/tools-and-resources/list-of-food-additives-permitted-under-food-regulations673e4fa37bb7440d9c23905a343796fe.pdf"
+SFA_ADDITIVES_AS_OF = "31 May 2024"
+# E/INS codes transcribed from the SFA permitted-additives guidance.
+SFA_PERMITTED_ADDITIVES = frozenset({
+    "e100", "e101", "e102", "e104", "e110", "e120", "e122", "e123", "e124", "e127", "e129", "e132", "e133",
+    "e140", "e141", "e142", "e150a", "e150b", "e150c", "e150d", "e151", "e153", "e155", "e160a", "e160b",
+    "e160c", "e160d", "e160e", "e161b", "e162", "e170", "e171", "e172", "e173", "e174", "e175", "e200",
+    "e202", "e203", "e210", "e211", "e212", "e218", "e219", "e220", "e221", "e222", "e223", "e224", "e226",
+    "e227", "e228", "e234", "e235", "e242", "e249", "e250", "e251", "e252", "e260", "e261", "e262", "e263",
+    "e270", "e280", "e281", "e282", "e283", "e290", "e296", "e297", "e300", "e301", "e302", "e304", "e306",
+    "e307", "e310", "e311", "e312", "e315", "e316", "e319", "e320", "e321", "e322", "e325", "e326", "e327",
+    "e330", "e331", "e332", "e333", "e334", "e335", "e336", "e337", "e338", "e339", "e340", "e341", "e350",
+    "e351", "e352", "e354", "e355", "e363", "e380", "e385", "e392", "e400", "e401", "e402", "e403", "e404",
+    "e405", "e406", "e407", "e407a", "e410", "e412", "e413", "e414", "e415", "e416", "e417", "e418", "e420",
+    "e421", "e422", "e425", "e432", "e433", "e434", "e435", "e436", "e440", "e442", "e444", "e445", "e450",
+    "e451", "e452", "e459", "e460", "e461", "e462", "e463", "e464", "e465", "e466", "e468", "e469", "e470a",
+    "e471", "e472a", "e472b", "e472c", "e472d", "e472e", "e473", "e475", "e476", "e477", "e481", "e482", "e483",
+    "e491", "e492", "e493", "e494", "e495", "e500", "e501", "e503", "e504", "e507", "e508", "e509", "e511", "e513",
+    "e514", "e515", "e516", "e517", "e522", "e524", "e525", "e526", "e527", "e528", "e529", "e530", "e535", "e536",
+    "e541", "e551", "e552", "e553a", "e553b", "e554", "e556", "e575", "e576", "e577", "e578", "e579", "e585",
+    "e620", "e621", "e622", "e623", "e624", "e625", "e626", "e627", "e628", "e629", "e630", "e631", "e632", "e633",
+    "e634", "e635", "e640", "e641", "e650", "e900", "e901", "e902", "e903", "e904", "e905", "e920", "e941", "e942",
+    "e950", "e951", "e952", "e953", "e954", "e955", "e957", "e960", "e960a", "e960b", "e960c", "e960d", "e961",
+    "e964", "e965", "e966", "e967", "e968", "e969", "e999", "e1105", "e1200", "e1202", "e1204", "e1404", "e1410",
+    "e1412", "e1413", "e1414", "e1420", "e1422", "e1440", "e1442", "e1450", "e1451", "e1505", "e1517", "e1518",
+    "e1519", "e1520", "e1521",
+})
+# These permitted additives carry labeling, intake, or usage considerations in the SFA guidance.
+CARE_ADDITIVES = frozenset({
+    "e102", "e110", "e122", "e124", "e129", "e133", "e220", "e221", "e222", "e223", "e224", "e226", "e227", "e228",
+    "e249", "e250", "e251", "e252", "e320", "e321", "e420", "e950", "e951", "e952", "e954", "e955", "e960",
+})
+AVOID_ADDITIVES = frozenset()
+AVOID_NUTRISCORE = frozenset({"d", "e"})
+CARE_NUTRISCORE = frozenset({"c"})
+AVOID_NOVA_GROUP = 4
+CARE_NOVA_GROUP = 3
 BANNED_PHRASES = [
     "cures", "will prevent", "treats your", "safe for you",
     "you should stop eating", "diagnos", "prescrib",
@@ -220,6 +257,143 @@ def check_output(text):
     return [phrase for phrase in BANNED_PHRASES if phrase in lowered]
 
 
+def _normalise_additive_code(code):
+    """Normalize E/INS labels from product metadata for rubric matching."""
+    value = str(code or "").strip().lower()
+    if not value:
+        return ""
+    return value if value.startswith("e") else f"e{value}"
+
+
+def get_flagged_additives(additive_codes):
+    """Return additive codes that trigger a rubric care/avoid rule, with reasons."""
+    flagged = []
+    normalized_codes = list(dict.fromkeys(
+        code for code in (_normalise_additive_code(value) for value in (additive_codes or [])) if code
+    ))
+    for code in normalized_codes:
+        if code in AVOID_ADDITIVES:
+            reason = "flagged for avoidance"
+        elif code not in SFA_PERMITTED_ADDITIVES:
+            reason = f"not found in SFA permitted-additives guidance ({SFA_ADDITIVES_AS_OF})"
+        elif code in CARE_ADDITIVES:
+            reason = "warrants moderation"
+        else:
+            continue
+        flagged.append({"code": code.upper(), "reason": reason})
+    return flagged
+
+
+def apply_rubric(nutriscore_grade, nova_group, additive_codes):
+    """Return (verdict, reasons) using deterministic SFA and nutrition rules."""
+    reasons = []
+    grade = str(nutriscore_grade or "").strip().lower()
+    try:
+        nova = int(nova_group) if nova_group is not None and str(nova_group).strip() else None
+    except (TypeError, ValueError):
+        nova = None
+
+    normalized_codes = list(dict.fromkeys(
+        code for code in (_normalise_additive_code(value) for value in (additive_codes or [])) if code
+    ))
+    avoid_hits = [code for code in normalized_codes if code in AVOID_ADDITIVES]
+    unlisted_hits = [code for code in normalized_codes if code not in SFA_PERMITTED_ADDITIVES]
+    care_hits = [code for code in normalized_codes if code in CARE_ADDITIVES]
+
+    if avoid_hits:
+        reasons.append(f"contains additive(s) flagged for avoidance: {', '.join(avoid_hits)}")
+    if unlisted_hits:
+        reasons.append(
+            f"additive(s) not found in the SFA permitted-additives guidance ({SFA_ADDITIVES_AS_OF}): "
+            f"{', '.join(unlisted_hits)}"
+        )
+    if grade in AVOID_NUTRISCORE:
+        reasons.append(f"Nutri-Score {grade.upper()}")
+    if nova == AVOID_NOVA_GROUP:
+        reasons.append(f"NOVA group {nova}")
+    if reasons:
+        return "avoid", reasons
+
+    if care_hits:
+        reasons.append(f"contains additive(s) that warrant moderation: {', '.join(care_hits)}")
+    if grade in CARE_NUTRISCORE:
+        reasons.append(f"Nutri-Score {grade.upper()}")
+    if nova == CARE_NOVA_GROUP:
+        reasons.append(f"NOVA group {nova} (ultra-processed)")
+    if reasons:
+        return "care", reasons
+
+    if grade in {"a", "b"}:
+        return "ok", [f"Nutri-Score {grade.upper()}"]
+
+    return "unknown", ["insufficient data to apply the rubric (no Nutri-Score or NOVA group on file)"]
+
+
+def _format_number(value):
+    """Format numeric nutrition values without unnecessary decimal noise."""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return "not available"
+    return f"{number:.1f}" if number % 1 else f"{number:.0f}"
+
+
+def build_verdict_summary(product, nutrition, rubric_verdict, rubric_reasons):
+    """Build a deterministic, neutral summary from retrieved product data and the rubric."""
+    name = product.get("product_name") or product.get("product_name_en") or "This product"
+    title = f"# {name} – {rubric_verdict.title()}"
+    grade = str(product.get("nutriscore_grade") or "").strip().upper()
+    nova = product.get("nova_group")
+    sugars = (nutrition.get("sugars") or {}).get("value")
+    added_sugars = (nutrition.get("added_sugars") or {}).get("value")
+    protein = (nutrition.get("proteins") or {}).get("value")
+    fiber = (nutrition.get("fiber") or {}).get("value")
+    sentence_parts = []
+
+    if grade:
+        grade_descriptions = {
+            "A": "the highest possible score indicating the strongest nutritional profile",
+            "B": "a relatively favorable nutritional profile",
+            "C": "a middle-range nutritional profile",
+            "D": "a poor nutritional profile",
+            "E": "the lowest possible score indicating poor nutritional quality",
+        }
+        sentence_parts.append(f"This product receives a Nutri-Score {grade} rating, which is {grade_descriptions.get(grade, 'the recorded nutritional score')}.")
+    elif rubric_verdict == "unknown":
+        sentence_parts.append("There is not enough recorded Nutri-Score or NOVA data to fully apply the rubric.")
+
+    nutrition_sentence = []
+    if sugars is not None:
+        nutrition_sentence.append(f"{_format_number(sugars)}g of sugars")
+    if added_sugars is not None:
+        nutrition_sentence.append(f"the product record lists {_format_number(added_sugars)}g of added sugars")
+    if nutrition_sentence:
+        sentence_parts.append("Per 100g, it contains " + ", and ".join(nutrition_sentence) + ".")
+
+    low_nutrition = []
+    if protein is not None and float(protein) == 0:
+        low_nutrition.append("no protein")
+    if fiber is not None and float(fiber) == 0:
+        low_nutrition.append("no fiber")
+    if low_nutrition:
+        sentence_parts.append("The recorded nutrition shows " + " and ".join(low_nutrition) + ".")
+
+    if nova is not None:
+        try:
+            nova_number = int(nova)
+        except (TypeError, ValueError):
+            nova_number = None
+        if nova_number == 4:
+            sentence_parts.append("As an ultra-processed beverage (NOVA Group 4), it offers limited nutritional benefit relative to its recorded sugar content.")
+        elif nova_number == 3:
+            sentence_parts.append("It is classified as a processed food (NOVA Group 3).")
+
+    if rubric_reasons and not sentence_parts:
+        sentence_parts.append("The rubric was applied using the available product and additive data: " + "; ".join(rubric_reasons) + ".")
+
+    return title + "\n\n" + " ".join(sentence_parts)
+
+
 def analyse_label(source, skip_llm=False):
     """Fetch barcode product details and generate LLM ingredient verdicts."""
     barcode = read_barcode(source)
@@ -229,12 +403,23 @@ def analyse_label(source, skip_llm=False):
             "ingredients": [], "verdicts": {}, "matches": {}, "unknowns": [],
             "product": None, "nutriscore_grade": None, "nutrition": {},
             "additives_highlights": {"additives": [], "highlights": []},
+            "flagged_additives": [],
+            "rubric_verdict": "unknown",
+            "rubric_reasons": ["no product data available to apply the rubric"],
             "explanation": f"Barcode {barcode or 'not detected'} was not found in Pinecone or OpenFoodFacts.",
             "violations": [], "external_source": None,
         }
 
     product = product_record["details"]
     ingredients = parse_ingredients(product_record["ingredients_text"])
+    additive_codes = _extract_additives_and_highlights(product)["additives"]
+    flagged_additives = get_flagged_additives(additive_codes)
+    rubric_verdict, rubric_reasons = apply_rubric(
+        product.get("nutriscore_grade"),
+        product.get("nova_group"),
+        additive_codes,
+    )
+    verdict_summary = build_verdict_summary(product, product_record["nutrition"], rubric_verdict, rubric_reasons)
     result = {
         "ingredients": ingredients,
         "verdicts": {ingredient: "unknown" for ingredient in ingredients},
@@ -244,6 +429,10 @@ def analyse_label(source, skip_llm=False):
         "nutriscore_grade": product.get("nutriscore_grade"),
         "nutrition": product_record["nutrition"],
         "additives_highlights": _extract_additives_and_highlights(product),
+        "flagged_additives": flagged_additives,
+        "rubric_verdict": rubric_verdict,
+        "rubric_reasons": rubric_reasons,
+        "verdict_summary": verdict_summary,
         "explanation": None,
         "violations": [],
         "external_source": product_record["source"],
@@ -251,7 +440,7 @@ def analyse_label(source, skip_llm=False):
 
     client = get_openai_client()
     if skip_llm or client is None:
-        result["explanation"] = "LLM health assessment disabled. Product details were retrieved from Pinecone."
+        result["explanation"] = verdict_summary
         return result
 
     try:
@@ -275,10 +464,12 @@ def analyse_label(source, skip_llm=False):
         if isinstance(notes, dict) and notes:
             summary += "\n\n" + "\n".join(f"{ingredient}: {notes.get(ingredient, 'No explanation returned.')}" for ingredient in ingredients)
         violations = check_output(summary)
-        result["explanation"] = "Assessment withheld because it contained medical-claim language." if violations else summary
+        result["llm_explanation"] = "Assessment withheld because it contained medical-claim language." if violations else summary
+        result["explanation"] = verdict_summary
         result["violations"] = violations
     except Exception as exc:
-        result["explanation"] = f"(Health assessment unavailable: {exc})"
+        result["llm_explanation"] = f"(Health assessment unavailable: {exc})"
+        result["explanation"] = verdict_summary
 
     return result
 
