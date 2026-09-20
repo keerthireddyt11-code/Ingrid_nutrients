@@ -51,6 +51,7 @@
       animation: scan-line 2s infinite ease-in-out;
       box-shadow: 0 0 12px #10b981, 0 0 20px #059669;
     }
+    .tab-btn.active-tab { background: linear-gradient(135deg, #059669, #0d9488); color: #fff; box-shadow: 0 8px 20px rgba(5, 150, 105, 0.25); }
   </style>
 </head>
 <body class="bg-gradient-to-br from-emerald-50/60 via-slate-50 to-teal-50/40 text-slate-800 min-h-screen flex flex-col font-sans antialiased selection:bg-brand-500 selection:text-white">
@@ -224,6 +225,18 @@
         </div>
       </div>
 
+      <!-- Tabs -->
+      <div class="flex items-center gap-2 bg-white/70 border border-slate-200/80 rounded-2xl p-1.5 shadow-sm w-full sm:w-fit">
+        <button id="tab-btn-overview" class="tab-btn active-tab px-5 py-2 rounded-xl text-sm font-bold transition" data-tab="overview">
+          <i data-lucide="layout-dashboard" class="w-4 h-4 inline-block mr-1.5 -mt-0.5"></i>Overview
+        </button>
+        <button id="tab-btn-chat" class="tab-btn px-5 py-2 rounded-xl text-sm font-bold transition text-slate-500" data-tab="chat">
+          <i data-lucide="message-circle" class="w-4 h-4 inline-block mr-1.5 -mt-0.5"></i>Ask Ingrid
+        </button>
+      </div>
+
+      <div id="tab-panel-overview" class="space-y-6">
+
       <!-- Verdict Banner -->
       <div id="verdict-banner" class="p-6 sm:p-7 rounded-3xl border flex flex-col sm:flex-row items-start sm:items-center justify-between gap-5 shadow-xl transition-all duration-300">
         <div class="flex items-start space-x-4">
@@ -310,6 +323,30 @@
 
       </div>
 
+      </div>
+
+      <!-- Chat Tab Panel -->
+      <div id="tab-panel-chat" class="hidden space-y-6">
+        <div class="bg-white/95 rounded-3xl shadow-xl shadow-slate-200/50 border border-slate-200/80 backdrop-blur-md flex flex-col h-[520px]">
+          <div class="px-6 py-4 border-b border-slate-100 flex items-center gap-2.5">
+            <div class="p-2 bg-brand-50 text-brand-700 rounded-xl border border-brand-200">
+              <i data-lucide="sparkles" class="w-4 h-4"></i>
+            </div>
+            <div>
+              <h4 class="text-sm font-extrabold text-slate-800">Ask Ingrid about this product</h4>
+              <p class="text-xs text-slate-400">Answers are grounded in this product's own retrieved data.</p>
+            </div>
+          </div>
+          <div id="chat-messages" class="flex-grow overflow-y-auto px-6 py-4 space-y-3 text-sm"></div>
+          <div class="px-4 py-3 border-t border-slate-100 flex items-center gap-2">
+            <input id="chat-input" type="text" placeholder="e.g. Is this product high in sugar?" class="flex-grow px-4 py-2.5 rounded-xl border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-brand-300" />
+            <button id="chat-send" class="p-2.5 bg-brand-600 hover:bg-brand-700 text-white rounded-xl shadow-sm transition flex-shrink-0">
+              <i data-lucide="send" class="w-4 h-4"></i>
+            </button>
+          </div>
+        </div>
+      </div>
+
     </div>
 
     <!-- Scan History -->
@@ -359,6 +396,10 @@
     const errorTitle = document.getElementById('error-title');
     const errorDesc = document.getElementById('error-desc');
     const resultsSection = document.getElementById('results-section');
+
+    // Tracks the product currently shown, so the chat tab knows what to ask about
+    let currentBarcode = null;
+    let chatHistory = [];
 
     // Show any previously saved scans on page load
     renderHistory();
@@ -472,6 +513,7 @@
       hideError();
       hideStatus();
       resultsSection.classList.add('hidden');
+      resetChatPanel();
 
       dropZone.scrollIntoView({ behavior: 'smooth', block: 'center' });
     }
@@ -580,6 +622,8 @@
     // Render Results onto the UI
     function renderProductResults(barcode, data) {
       hideError();
+      currentBarcode = barcode;
+      resetChatPanel();
       const p = data.product;
       const nutrition = data.nutrition || {};
       const additiveData = data.additives_highlights || { additives: [], highlights: [] };
@@ -740,6 +784,89 @@
         desc.textContent = "ClearLabel has verified source data for this item. Check ingredient list for specific dietary requirements.";
       }
     }
+
+    // Tab switching between the overview panel and the chat panel
+    document.querySelectorAll('.tab-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        document.querySelectorAll('.tab-btn').forEach(other => {
+          other.classList.remove('active-tab');
+          other.classList.add('text-slate-500');
+        });
+        btn.classList.add('active-tab');
+        btn.classList.remove('text-slate-500');
+
+        const tab = btn.dataset.tab;
+        document.getElementById('tab-panel-overview').classList.toggle('hidden', tab !== 'overview');
+        document.getElementById('tab-panel-chat').classList.toggle('hidden', tab !== 'chat');
+
+        if (tab === 'chat' && document.getElementById('chat-messages').children.length === 0) {
+          const productName = document.getElementById('res-product-name').textContent;
+          appendChatMessage('assistant', `Ask me anything about ${productName} — I'll answer using its retrieved product data.`);
+        }
+      });
+    });
+
+    // Chat tab: ask questions about the currently scanned product
+    const chatMessages = document.getElementById('chat-messages');
+    const chatInput = document.getElementById('chat-input');
+    const chatSend = document.getElementById('chat-send');
+
+    function appendChatMessage(role, text) {
+      const bubble = document.createElement('div');
+      bubble.className = role === 'user'
+        ? 'ml-auto max-w-[80%] bg-brand-600 text-white px-4 py-2.5 rounded-2xl rounded-br-sm shadow-sm'
+        : 'mr-auto max-w-[80%] bg-slate-100 text-slate-800 px-4 py-2.5 rounded-2xl rounded-bl-sm shadow-sm';
+      bubble.textContent = text;
+      chatMessages.appendChild(bubble);
+      chatMessages.scrollTop = chatMessages.scrollHeight;
+      return bubble;
+    }
+
+    // Clears the chat thread whenever a new product is loaded or the scanner resets
+    function resetChatPanel() {
+      chatHistory = [];
+      chatMessages.innerHTML = '';
+      document.getElementById('tab-btn-overview').click();
+    }
+
+    async function sendChatMessage() {
+      const question = chatInput.value.trim();
+      if (!question || !currentBarcode) return;
+
+      chatInput.value = '';
+      chatInput.disabled = true;
+      chatSend.disabled = true;
+      appendChatMessage('user', question);
+
+      const typing = appendChatMessage('assistant', 'Ingrid is thinking...');
+      typing.classList.add('italic', 'text-slate-400');
+
+      try {
+        const response = await fetch('/api/chat', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ barcode: currentBarcode, message: question, history: chatHistory.slice(-8), recent_scans: getHistory() })
+        });
+        const data = await response.json();
+        const answer = data.answer || "Sorry, I don't have an answer for that.";
+        typing.remove();
+        appendChatMessage('assistant', answer);
+        chatHistory.push({ role: 'user', content: question });
+        chatHistory.push({ role: 'assistant', content: answer });
+      } catch (err) {
+        typing.remove();
+        appendChatMessage('assistant', 'Network error — please try again.');
+      } finally {
+        chatInput.disabled = false;
+        chatSend.disabled = false;
+        chatInput.focus();
+      }
+    }
+
+    chatSend.addEventListener('click', sendChatMessage);
+    chatInput.addEventListener('keydown', event => {
+      if (event.key === 'Enter') sendChatMessage();
+    });
 
     // Helper Functions
     function showStatus(text) {

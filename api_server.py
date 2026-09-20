@@ -16,7 +16,7 @@ ROOT = Path(__file__).parent
 sys.path.insert(0, str(ROOT / "ingredient-checker"))
 
 from barcode_detector import extract_text
-from chain import analyse_label, get_openai_client
+from chain import analyse_label, answer_question, get_openai_client
 
 
 def decode_barcode_with_vision(image):
@@ -63,7 +63,7 @@ class IngridHandler(SimpleHTTPRequestHandler):
 
     def do_POST(self):
         endpoint = urlparse(self.path).path
-        if endpoint not in {"/api/product", "/api/decode-barcode"}:
+        if endpoint not in {"/api/product", "/api/decode-barcode", "/api/chat"}:
             self.send_error(HTTPStatus.NOT_FOUND)
             return
 
@@ -77,6 +77,16 @@ class IngridHandler(SimpleHTTPRequestHandler):
         if endpoint == "/api/product":
             barcode = str(payload.get("barcode", "")).strip()
             result = analyse_label(barcode)
+        elif endpoint == "/api/chat":
+            barcode = str(payload.get("barcode", "")).strip()
+            message = str(payload.get("message", "")).strip()
+            history = payload.get("history") or []
+            if not isinstance(history, list):
+                history = []
+            recent_scans = payload.get("recent_scans") or []
+            if not isinstance(recent_scans, list):
+                recent_scans = []
+            result = answer_question(barcode, message, history, recent_scans)
         else:
             image = str(payload.get("image", ""))
             _, separator, encoded_image = image.partition(",")

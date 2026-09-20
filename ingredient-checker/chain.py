@@ -7,12 +7,17 @@ from pathlib import Path
 
 import requests
 from dotenv import load_dotenv
+from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.output_parsers import StrOutputParser
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain_openai import ChatOpenAI
 from openai import OpenAI
 from pinecone import Pinecone
 
 from barcode_detector import extract_text
 
-load_dotenv()
+# Load .env from this file's own directory so keys resolve regardless of the caller's cwd
+load_dotenv(Path(__file__).resolve().parent / ".env")
 
 OPENAI_CHAT_MODEL = os.getenv("OPENAI_CHAT_MODEL", "gpt-4o-mini")
 PRODUCT_INDEX_NAME = os.getenv("PINECONE_PRODUCT_INDEX", "ingrid-beverages")
@@ -276,3 +281,229 @@ def analyse_label(source, skip_llm=False):
         result["explanation"] = f"(Health assessment unavailable: {exc})"
 
     return result
+
+
+def get_chat_model():
+    """Return a LangChain chat model only when the API key is configured."""
+    api_key = os.getenv("OPENAI_API_KEY", "").strip()
+    return ChatOpenAI(model=OPENAI_CHAT_MODEL, api_key=api_key, temperature=0) if api_key else None
+
+
+def _history_to_messages(history):
+    """Convert {"role", "content"} turns from the frontend into LangChain message objects."""
+    messages = []
+    for turn in (history or [])[-8:]:
+        content = str(turn.get("content", "")).strip()
+        if not content:
+            continue
+        if turn.get("role") == "user":
+            messages.append(HumanMessage(content=content))
+        elif turn.get("role") == "assistant":
+            messages.append(AIMessage(content=content))
+    return messages
+
+
+def _product_context_block(product, ingredients, nutrition, nutriscore_grade):
+    """Curated (not raw) product fields, so untrusted crowd-sourced text can't smuggle prompt instructions."""
+    curated = {
+        "name": product.get("product_name") or product.get("product_name_en") or "Unknown",
+        "brand": product.get("brands", ""),
+        "category": product.get("categories_tags", ""),
+        "nutriscore_grade": nutriscore_grade or "not available",
+        "nova_group": product.get("nova_group", "unknown"),
+        "ingredients": ingredients,
+        "nutrition_per_100g": nutrition,
+    }
+    return json.dumps(curated, ensure_ascii=False)
+
+
+def _recent_scans_block(recent_scans):
+    """Render the customer's other recently scanned products, for disambiguation only."""
+    items = [item for item in (recent_scans or []) if isinstance(item, dict)][:10]
+    if not items:
+        return "No other recent scans."
+    lines = []
+    for item in items:
+        name = str(item.get("productName") or "Unknown product")
+        brand = str(item.get("brand") or "")
+        code = str(item.get("barcode") or "")
+        lines.append(f"- {name} ({brand}) — barcode {code}".replace(" ()", ""))
+    return "\n".join(lines)
+
+
+_CLASSIFY_PROMPT = ChatPromptTemplate.from_messages([
+    ("system", (
+        "Classify the customer's food/nutrition question into exactly one label.\n"
+        "PRODUCT: only about the specific product currently scanned — triggers like 'this product', "
+        "'does this have…', 'is this vegan', 'how much sugar', comparisons across recent scans, verdict "
+        "explanations.\n"
+        "GENERAL: only general food-science knowledge that does not depend on the scanned product — "
+        "triggers like 'what is <ingredient>', 'what is E<number>', 'what does <additive> do', 'how does "
+        "Nutri-Score work', 'what's the difference between NOVA 3 and 4', common allergen questions not "
+        "tied to a specific product.\n"
+        "MIXED: asks a general food-science question AND whether/how it applies to the scanned product in "
+        "the same message, e.g. 'what is E471 and is it in this?'.\n"
+        "Respond with exactly one word: PRODUCT, GENERAL, or MIXED."
+    )),
+    MessagesPlaceholder("history"),
+    ("human", "{question}"),
+])
+
+_PRODUCT_PROMPT = ChatPromptTemplate.from_messages([
+    ("system", (
+        "You are Ingrid, a grounded food-product assistant. The customer is asking about ONE specific "
+        "product: the one currently open in the app.\n\n"
+        "Answer ONLY using the data inside <product_context>. <recent_scans> is provided solely so you "
+        "can recognise if the customer is asking about a *different* product they scanned earlier — if so, "
+        "tell them you can only discuss the product currently open, and that they should open that other "
+        "product's page to ask about it there.\n\n"
+        "Rules:\n"
+        "- Do not use outside knowledge to fill in facts about this product; if <product_context> does not "
+        "cover the question, say so plainly instead of guessing.\n"
+        "- Do not state facts about any product other than the one in <product_context>.\n"
+        "- Do not give medical, dietary, or treatment advice, and never say a product is safe or unsafe for "
+        "a person or condition.\n"
+        "- Keep answers to two to four plain-language sentences.\n\n"
+        "<product_context>\n{product_context}\n</product_context>\n\n"
+        "<recent_scans>\n{recent_scans}\n</recent_scans>"
+    )),
+    MessagesPlaceholder("history"),
+    ("human", "{question}"),
+])
+
+_GENERAL_PROMPT = ChatPromptTemplate.from_messages([
+    ("system", (
+        "You are Ingrid, a food-science assistant. Answer the customer's general food-science question: "
+        "what an ingredient or additive IS or DOES, how Nutri-Score or NOVA work, common allergens, or "
+        "cooking chemistry.\n\n"
+        "Rules:\n"
+        "- Answer from general food-science knowledge, not from any specific scanned product.\n"
+        "- Do NOT invent or imply facts about the customer's scanned product in this mode.\n"
+        "- Answer in two to four sentences. Factual and neutral. Prefer 'generally' / 'typically' / "
+        "'commonly used as' phrasing.\n"
+        "- Do NOT claim safety verdicts stronger than 'considered safe by regulators' or 'some studies "
+        "have raised questions about X'.\n"
+        "- Do not give medical, dietary, or treatment advice, and never say something is safe or unsafe for "
+        "a person or condition."
+    )),
+    MessagesPlaceholder("history"),
+    ("human", "{question}"),
+])
+
+_MIXED_PROMPT = ChatPromptTemplate.from_messages([
+    ("system", (
+        "The customer's question mixes a GENERAL food-science part with a PRODUCT-specific part about "
+        "the product currently open in the app. Answer in two clearly separated parts, in this order, and "
+        "make the switch between them visible, for example: 'E471 is <general answer>. Looking at this "
+        "product's ingredient list: <grounded answer>.'\n\n"
+        "Part 1 — General (from your own food-science knowledge):\n"
+        "- Factual and neutral. Prefer 'generally' / 'typically' / 'commonly used as' phrasing.\n"
+        "- Do NOT claim safety verdicts stronger than 'considered safe by regulators' or 'some studies "
+        "have raised questions about X'.\n\n"
+        "Part 2 — Product-grounded (ONLY using <product_context>):\n"
+        "- <recent_scans> is provided solely so you can recognise a *different* scanned product — if the "
+        "question is actually about one of those, say you can only discuss the product currently open.\n"
+        "- If <product_context> does not cover the product part, say so plainly instead of guessing.\n\n"
+        "Never give medical, dietary, or treatment advice, and never say a product is safe or unsafe for a "
+        "person or condition.\n\n"
+        "<product_context>\n{product_context}\n</product_context>\n\n"
+        "<recent_scans>\n{recent_scans}\n</recent_scans>"
+    )),
+    MessagesPlaceholder("history"),
+    ("human", "{question}"),
+])
+
+
+def _classify_intent(model, question, history_messages):
+    try:
+        label = (_CLASSIFY_PROMPT | model | StrOutputParser()).invoke(
+            {"question": question, "history": history_messages}
+        ).strip().upper()
+    except Exception:
+        return "PRODUCT"
+    if label.startswith("MIXED"):
+        return "MIXED"
+    if label.startswith("GENERAL"):
+        return "GENERAL"
+    return "PRODUCT"
+
+
+def _fetch_product_context(barcode, recent_scans):
+    """Retrieve and curate grounding context for the currently scanned barcode, if any."""
+    product_record = lookup_pinecone_barcode(barcode) or lookup_openfoodfacts_barcode(barcode)
+    if not product_record:
+        return "No retrieved data is available for this barcode.", _recent_scans_block(recent_scans)
+    product = product_record["details"]
+    ingredients = parse_ingredients(product_record["ingredients_text"])
+    context = _product_context_block(product, ingredients, product_record["nutrition"], product.get("nutriscore_grade"))
+    return context, _recent_scans_block(recent_scans)
+
+
+def answer_question(barcode, question, history=None, recent_scans=None):
+    """Route a chat question to a product-grounded or general-knowledge LangChain answerer."""
+    question = str(question or "").strip()
+    if not question:
+        return {"answer": "Ask a question to get started.", "violations": [], "mode": None}
+
+    model = get_chat_model()
+    if model is None:
+        return {"answer": "Chat is unavailable because no OpenAI API key is configured.", "violations": [], "mode": None}
+
+    history_messages = _history_to_messages(history)
+    intent = _classify_intent(model, question, history_messages)
+
+    if intent == "GENERAL":
+        try:
+            answer = (_GENERAL_PROMPT | model | StrOutputParser()).invoke(
+                {"history": history_messages, "question": question}
+            ).strip()
+        except Exception as exc:
+            return {"answer": f"(Chat unavailable: {exc})", "violations": [], "mode": "general"}
+        violations = check_output(answer)
+        if violations:
+            answer = "I can't answer that directly since it touches on medical or dietary advice. Please consult a healthcare professional."
+        return {"answer": answer, "violations": violations, "mode": "general"}
+
+    if intent == "MIXED":
+        product_context, recent_scans_text = _fetch_product_context(barcode, recent_scans)
+        try:
+            answer = (_MIXED_PROMPT | model | StrOutputParser()).invoke({
+                "product_context": product_context,
+                "recent_scans": recent_scans_text,
+                "history": history_messages,
+                "question": question,
+            }).strip()
+        except Exception as exc:
+            return {"answer": f"(Chat unavailable: {exc})", "violations": [], "mode": "mixed"}
+        violations = check_output(answer)
+        if violations:
+            answer = "I can't answer that directly since it touches on medical or dietary advice. Please consult a healthcare professional."
+        return {"answer": answer, "violations": violations, "mode": "mixed"}
+
+    # PRODUCT mode: retrieve grounding context for the currently scanned barcode (Pinecone, falling back to OpenFoodFacts)
+    product_record = lookup_pinecone_barcode(barcode) or lookup_openfoodfacts_barcode(barcode)
+    if not product_record:
+        return {
+            "answer": f"I don't have any retrieved data for barcode {barcode or 'unknown'}. Scan the product first.",
+            "violations": [],
+            "mode": "product",
+        }
+
+    product = product_record["details"]
+    ingredients = parse_ingredients(product_record["ingredients_text"])
+    product_context = _product_context_block(product, ingredients, product_record["nutrition"], product.get("nutriscore_grade"))
+
+    try:
+        answer = (_PRODUCT_PROMPT | model | StrOutputParser()).invoke({
+            "product_context": product_context,
+            "recent_scans": _recent_scans_block(recent_scans),
+            "history": history_messages,
+            "question": question,
+        }).strip()
+    except Exception as exc:
+        return {"answer": f"(Chat unavailable: {exc})", "violations": [], "mode": "product"}
+
+    violations = check_output(answer)
+    if violations:
+        answer = "I can't answer that directly since it touches on medical or dietary advice. Please consult a healthcare professional."
+    return {"answer": answer, "violations": violations, "mode": "product"}
