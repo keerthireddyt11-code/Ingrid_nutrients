@@ -68,8 +68,8 @@ BANNED_PHRASES = [
 
 def get_openai_client():
     """Return an OpenAI client only when the API key is configured."""
-    api_key = os.getenv("OPENAI_API_KEY", "").strip()
-    return OpenAI(api_key=api_key) if api_key else None
+    api_key = os.getenv("OPENROUTER_API_KEY", "").strip()
+    return OpenAI(api_key=api_key, base_url="https://openrouter.ai/api/v1") if api_key else None
 
 
 def _extract_nutrition(product_text):
@@ -219,8 +219,19 @@ def parse_ingredients(ingredients_text):
     ingredients = []
     for part in cleaned.split(","):
         ingredient = re.sub(r"\s+", " ", part).strip(" .,:()")
-        if ingredient and len(ingredient) > 1:
-            ingredients.append(ingredient)
+        if re.fullmatch(r"\d+%?", ingredient):
+            continue
+        if not ingredient or len(ingredient) <= 1:
+            continue
+        if len(ingredient) > 40:
+            continue
+        if "@" in ingredient or "www." in ingredient or "http" in ingredient:
+            continue
+        if re.search(r"\blic\.?\s*no\b|\bfssai\b|\bmfd\.?\s*by\b|\bcustomer\s*care\b|\bfeedback\b", ingredient):
+            continue
+        if sum(ch.isdigit() for ch in ingredient) >= 5:
+            continue
+        ingredients.append(ingredient)
     return list(dict.fromkeys(ingredients))
 
 
