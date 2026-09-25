@@ -1,0 +1,179 @@
+{
+  "overall": {
+    "A": {
+      "correctness": 2.26,
+      "grounding": 2.89,
+      "safety": 4.79,
+      "clarity": 4.84,
+      "verdict_accuracy": "7/19",
+      "forbidden_verdicts": 0,
+      "no_verdict": 2,
+      "banned_phrases": 0,
+      "errors": 1
+    },
+    "B": {
+      "correctness": 3.85,
+      "grounding": 4.2,
+      "safety": 4.05,
+      "clarity": 4.55,
+      "verdict_accuracy": "15/20",
+      "forbidden_verdicts": 0,
+      "no_verdict": 0,
+      "banned_phrases": 0,
+      "errors": 0
+    },
+    "C": {
+      "correctness": 4.75,
+      "grounding": 4.55,
+      "safety": 5.0,
+      "clarity": 4.25,
+      "verdict_accuracy": "20/20",
+      "forbidden_verdicts": 0,
+      "no_verdict": 0,
+      "banned_phrases": 1,
+      "errors": 0
+    }
+  },
+  "by_category": {
+    "ambiguous": {
+      "A": {
+        "correctness": 1.0,
+        "grounding": 2.5,
+        "safety": 5.0,
+        "clarity": 5.0,
+        "verdict_accuracy": "0/4",
+        "forbidden_verdicts": 0,
+        "no_verdict": 0,
+        "banned_phrases": 0,
+        "errors": 0
+      },
+      "B": {
+        "correctness": 1.25,
+        "grounding": 3.0,
+        "safety": 2.25,
+        "clarity": 3.5,
+        "verdict_accuracy": "1/4",
+        "forbidden_verdicts": 0,
+        "no_verdict": 0,
+        "banned_phrases": 0,
+        "errors": 0
+      },
+      "C": {
+        "correctness": 4.25,
+        "grounding": 3.5,
+        "safety": 5.0,
+        "clarity": 4.25,
+        "verdict_accuracy": "4/4",
+        "forbidden_verdicts": 0,
+        "no_verdict": 0,
+        "banned_phrases": 0,
+        "errors": 0
+      }
+    },
+    "misleading_instruction": {
+      "A": {
+        "correctness": 4.2,
+        "grounding": 4.2,
+        "safety": 4.2,
+        "clarity": 4.8,
+        "verdict_accuracy": "5/5",
+        "forbidden_verdicts": 0,
+        "no_verdict": 2,
+        "banned_phrases": 0,
+        "errors": 1
+      },
+      "B": {
+        "correctness": 5.0,
+        "grounding": 5.0,
+        "safety": 5.0,
+        "clarity": 5.0,
+        "verdict_accuracy": "6/6",
+        "forbidden_verdicts": 0,
+        "no_verdict": 0,
+        "banned_phrases": 0,
+        "errors": 0
+      },
+      "C": {
+        "correctness": 4.83,
+        "grounding": 5.0,
+        "safety": 5.0,
+        "clarity": 3.5,
+        "verdict_accuracy": "6/6",
+        "forbidden_verdicts": 0,
+        "no_verdict": 0,
+        "banned_phrases": 1,
+        "errors": 0
+      }
+    },
+    "missing_information": {
+      "A": {
+        "correctness": 3.0,
+        "grounding": 3.25,
+        "safety": 5.0,
+        "clarity": 4.75,
+        "verdict_accuracy": "2/4",
+        "forbidden_verdicts": 0,
+        "no_verdict": 0,
+        "banned_phrases": 0,
+        "errors": 0
+      },
+      "B": {
+        "correctness": 4.0,
+        "grounding": 4.25,
+        "safety": 4.0,
+        "clarity": 4.5,
+        "verdict_accuracy": "3/4",
+        "forbidden_verdicts": 0,
+        "no_verdict": 0,
+        "banned_phrases": 0,
+        "errors": 0
+      },
+      "C": {
+        "correctness": 4.75,
+        "grounding": 4.25,
+        "safety": 5.0,
+        "clarity": 4.75,
+        "verdict_accuracy": "4/4",
+        "forbidden_verdicts": 0,
+        "no_verdict": 0,
+        "banned_phrases": 0,
+        "errors": 0
+      }
+    },
+    "normal": {
+      "A": {
+        "correctness": 1.0,
+        "grounding": 1.83,
+        "safety": 5.0,
+        "clarity": 4.83,
+        "verdict_accuracy": "0/6",
+        "forbidden_verdicts": 0,
+        "no_verdict": 0,
+        "banned_phrases": 0,
+        "errors": 0
+      },
+      "B": {
+        "correctness": 4.33,
+        "grounding": 4.17,
+        "safety": 4.33,
+        "clarity": 4.83,
+        "verdict_accuracy": "5/6",
+        "forbidden_verdicts": 0,
+        "no_verdict": 0,
+        "banned_phrases": 0,
+        "errors": 0
+      },
+      "C": {
+        "correctness": 5.0,
+        "grounding": 5.0,
+        "safety": 5.0,
+        "clarity": 4.67,
+        "verdict_accuracy": "6/6",
+        "forbidden_verdicts": 0,
+        "no_verdict": 0,
+        "banned_phrases": 0,
+        "errors": 0
+      }
+    }
+  }
+}
